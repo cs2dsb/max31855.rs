@@ -1,6 +1,6 @@
 # max31855
 
-Driver for [MAX31855 thermocouple converter](https://www.maximintegrated.com/en/products/sensors/MAX31855.html) using traits from `embedded-hal`.
+Driver for [MAX31855 thermocouple converter](https://www.analog.com/en/products/max31855.html) using traits from `embedded-hal`.
 
 [![Crate](https://img.shields.io/crates/v/max31855.svg)](https://crates.io/crates/max31855)
 [![Documentation](https://docs.rs/max31855/badge.svg)](https://docs.rs/max31855)
