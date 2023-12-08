@@ -1,6 +1,6 @@
 [package]
 name = "max31855"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["cs2dsb <cs2dsb@gmail.com>"]
 edition = "2018"
 description = "Driver for MAX31855 SPI thermocouple converter"
@@ -13,5 +13,14 @@ documentation = "https://docs.rs/max31855"
 homepage = "https://github.com/cs2dsb/max31855.rs"
 
 [dependencies]
-embedded-hal  = { version = "=1.0.0-rc.2" }
-bit_field     = "0.10.0"
+embedded-hal       = "=1.0.0-rc.2"
+bit_field          = "0.10.0"
+
+[dependencies.embedded-hal-async]
+version = "=1.0.0-rc.2"
+optional = true
+
+[features]
+# TODO: remove me
+default = ["async"]
+async = ["embedded-hal-async"]
