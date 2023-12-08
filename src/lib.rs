@@ -3,6 +3,8 @@
 //! Driver for [MAX31855 thermocouple converter](https://www.maximintegrated.com/en/products/sensors/MAX31855.html) using traits from `embedded-hal`.
 //!
 //! ## Features
+//!
+//! * Implementations for both `embedded-hal` blocking and `embedded-hal-async` async/await I/O models
 //! * Read thermocouple temperature
 //! * Read internal reference junction temperature
 //! * Read fault data (missing thermocouple, short to ground or short to vcc)
@@ -41,15 +43,12 @@
 //! ```
 
 #![no_std]
-// #![deny(warnings, missing_docs)]
+#![deny(warnings, missing_docs)]
 #![cfg_attr(feature = "async", feature(async_fn_in_trait))]
 
 use bit_field::BitField;
 use core::ops::RangeInclusive;
-use embedded_hal::{
-    digital,
-    spi,
-};
+use embedded_hal::{digital, spi};
 
 pub mod blocking;
 
@@ -170,3 +169,94 @@ pub struct FullResult {
     pub unit: Unit,
 }
 
+/// A helper module to abstract over the non-I/O portions of the driver
+///
+/// This allows for maximal shared code between async and blocking impl
+mod io_less {
+    use super::*;
+
+    impl<S, C> From<IoLessError> for Error<S, C>
+    where
+        S: spi::ErrorType,
+        C: digital::ErrorType,
+    {
+        fn from(value: IoLessError) -> Self {
+            match value {
+                IoLessError::Fault => Error::Fault,
+                IoLessError::VccShortFault => Error::VccShortFault,
+                IoLessError::GroundShortFault => Error::GroundShortFault,
+                IoLessError::MissingThermocoupleFault => Error::MissingThermocoupleFault,
+            }
+        }
+    }
+
+    pub enum IoLessError {
+        /// The fault bit (16) was set in the response from the MAX31855
+        Fault,
+        /// The SCV fault bit (2) was set in the response from the MAX31855
+        VccShortFault,
+        /// The SCG fault bit (1) was set in the response from the MAX31855
+        GroundShortFault,
+        /// The OC fault bit (0) was set in the response from the MAX31855
+        MissingThermocoupleFault,
+    }
+
+    //
+    // These helper functions map 1:1 to the async/blocking trait methods
+    //
+
+    /// Reads the thermocouple temperature and leave it as a raw ADC count. Checks if there is a fault but doesn't detect what kind of fault it is
+    pub(crate) fn read_thermocouple_raw(buffer: [u8; 2]) -> Result<i16, IoLessError> {
+        if buffer[1].get_bit(FAULT_BIT) {
+            Err(IoLessError::Fault)?
+        }
+
+        let raw = (buffer[0] as u16) << 8 | (buffer[1] as u16);
+
+        let thermocouple = bits_to_i16(raw.get_bits(THERMOCOUPLE_BITS), 14, 4, 2);
+
+        Ok(thermocouple)
+    }
+
+    /// Reads the thermocouple temperature and converts it into degrees in the provided unit. Checks if there is a fault but doesn't detect what kind of fault it is
+    pub(crate) fn read_thermocouple(data: i16, unit: Unit) -> f32 {
+        unit.convert(Reading::Thermocouple.convert(data))
+    }
+
+    /// Reads both the thermocouple and the internal temperatures, leaving them as raw ADC counts and resolves faults to one of vcc short, ground short or missing thermocouple
+    pub(crate) fn read_all_raw(buffer: [u8; 4]) -> Result<FullResultRaw, IoLessError> {
+        let fault = buffer[1].get_bit(0);
+
+        if fault {
+            let raw = (buffer[2] as u16) << 8 | (buffer[3] as u16);
+
+            if raw.get_bit(FAULT_NO_THERMOCOUPLE_BIT) {
+                Err(IoLessError::MissingThermocoupleFault)?
+            } else if raw.get_bit(FAULT_GROUND_SHORT_BIT) {
+                Err(IoLessError::GroundShortFault)?
+            } else if raw.get_bit(FAULT_VCC_SHORT_BIT) {
+                Err(IoLessError::VccShortFault)?
+            } else {
+                // This should impossible, one of the other fields should be set as well
+                // but handled here just-in-case
+                Err(IoLessError::Fault)?
+            }
+        }
+
+        let first_u16 = (buffer[0] as u16) << 8 | (buffer[1] as u16);
+        let second_u16 = (buffer[2] as u16) << 8 | (buffer[3] as u16);
+
+        let thermocouple = bits_to_i16(first_u16.get_bits(THERMOCOUPLE_BITS), 14, 4, 2);
+        let internal = bits_to_i16(second_u16.get_bits(INTERNAL_BITS), 12, 16, 4);
+
+        Ok(FullResultRaw {
+            thermocouple,
+            internal,
+        })
+    }
+
+    /// Reads both the thermocouple and the internal temperatures, converts them into degrees in the provided unit and resolves faults to one of vcc short, ground short or missing thermocouple
+    pub(crate) fn read_all(full_result: FullResultRaw, unit: Unit) -> FullResult {
+        full_result.convert(unit)
+    }
+}

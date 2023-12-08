@@ -1,12 +1,11 @@
-use bit_field::BitField;
+//! An async-await version of the Max31855 driver
+//!
+//! Intended for use with [embedded-hal-async].
+
 use embedded_hal::digital::{OutputPin, PinState};
 use embedded_hal_async::spi::{self, SpiDevice};
 
-use crate::{
-    bits_to_i16, Error, FullResult, FullResultRaw, Reading, Unit, FAULT_BIT,
-    FAULT_GROUND_SHORT_BIT, FAULT_NO_THERMOCOUPLE_BIT, FAULT_VCC_SHORT_BIT, INTERNAL_BITS,
-    THERMOCOUPLE_BITS,
-};
+use crate::{io_less, Error, FullResult, FullResultRaw, Unit};
 
 async fn transfer<CS, SPI>(
     spi: &mut SPI,
@@ -61,15 +60,7 @@ where
         let mut buffer = [0; 2];
         transfer(self, chip_select, &mut buffer).await?;
 
-        if buffer[1].get_bit(FAULT_BIT) {
-            Err(Error::Fault)?
-        }
-
-        let raw = (buffer[0] as u16) << 8 | (buffer[1] as u16);
-
-        let thermocouple = bits_to_i16(raw.get_bits(THERMOCOUPLE_BITS), 14, 4, 2);
-
-        Ok(thermocouple)
+        Ok(io_less::read_thermocouple_raw(buffer)?)
     }
 
     /// Reads the thermocouple temperature and converts it into degrees in the provided unit. Checks if there is a fault but doesn't detect what kind of fault it is
@@ -78,9 +69,8 @@ where
         chip_select: &mut CS,
         unit: Unit,
     ) -> Result<f32, Error<SPI, CS>> {
-        self.read_thermocouple_raw(chip_select)
-            .await
-            .map(|r| unit.convert(Reading::Thermocouple.convert(r)))
+        let raw = self.read_thermocouple_raw(chip_select).await?;
+        Ok(io_less::read_thermocouple(raw, unit))
     }
 
     /// Reads both the thermocouple and the internal temperatures, leaving them as raw ADC counts and resolves faults to one of vcc short, ground short or missing thermocouple
@@ -90,35 +80,7 @@ where
     ) -> Result<FullResultRaw, Error<SPI, CS>> {
         let mut buffer = [0; 4];
         transfer(self, chip_select, &mut buffer).await?;
-
-        let fault = buffer[1].get_bit(0);
-
-        if fault {
-            let raw = (buffer[2] as u16) << 8 | (buffer[3] as u16);
-
-            if raw.get_bit(FAULT_NO_THERMOCOUPLE_BIT) {
-                Err(Error::MissingThermocoupleFault)?
-            } else if raw.get_bit(FAULT_GROUND_SHORT_BIT) {
-                Err(Error::GroundShortFault)?
-            } else if raw.get_bit(FAULT_VCC_SHORT_BIT) {
-                Err(Error::VccShortFault)?
-            } else {
-                // This should impossible, one of the other fields should be set as well
-                // but handled here just-in-case
-                Err(Error::Fault)?
-            }
-        }
-
-        let first_u16 = (buffer[0] as u16) << 8 | (buffer[1] as u16);
-        let second_u16 = (buffer[2] as u16) << 8 | (buffer[3] as u16);
-
-        let thermocouple = bits_to_i16(first_u16.get_bits(THERMOCOUPLE_BITS), 14, 4, 2);
-        let internal = bits_to_i16(second_u16.get_bits(INTERNAL_BITS), 12, 16, 4);
-
-        Ok(FullResultRaw {
-            thermocouple,
-            internal,
-        })
+        Ok(io_less::read_all_raw(buffer)?)
     }
 
     /// Reads both the thermocouple and the internal temperatures, converts them into degrees in the provided unit and resolves faults to one of vcc short, ground short or missing thermocouple
@@ -127,8 +89,7 @@ where
         chip_select: &mut CS,
         unit: Unit,
     ) -> Result<FullResult, Error<SPI, CS>> {
-        self.read_all_raw(chip_select)
-            .await
-            .map(|r| r.convert(unit))
+        let res = self.read_all_raw(chip_select).await?;
+        Ok(io_less::read_all(res, unit))
     }
 }
