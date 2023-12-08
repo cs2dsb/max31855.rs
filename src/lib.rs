@@ -5,6 +5,8 @@
 //! ## Features
 //!
 //! * Implementations for both `embedded-hal` blocking and `embedded-hal-async` async/await I/O models
+//!     * NOTE: `async` requires activating the `async` feature
+//!     * Also requires use of a beta/nightly rust (until rustc 1.75 on 2023-12-28)
 //! * Read thermocouple temperature
 //! * Read internal reference junction temperature
 //! * Read fault data (missing thermocouple, short to ground or short to vcc)
@@ -12,34 +14,35 @@
 //! * Supports Celsius, Fahrenheit or Kelvin units
 //! * Supports returning raw (ADC count) readings
 //!
-//! ## Example:
+//! ## Example (blocking):
+//!
 //! ```
-//!     let freq: Hertz = 4.mhz().into();
-//!     let mode = Mode {
-//!         polarity: Polarity::IdleLow,
-//!         phase: Phase::CaptureOnFirstTransition
-//!     };
+//! let freq: Hertz = 4.mhz().into();
+//! let mode = Mode {
+//!     polarity: Polarity::IdleLow,
+//!     phase: Phase::CaptureOnFirstTransition
+//! };
 //!
-//!     let mut spi = Spi::spi2(
-//!         device.SPI2,
-//!         (sck_pin, miso_pin, mosi_pin)
-//!         mode,
-//!         freq,
-//!         clocks,
-//!         &mut rcc.apb1
-//!     );
+//! let mut spi = Spi::spi2(
+//!     device.SPI2,
+//!     (sck_pin, miso_pin, mosi_pin)
+//!     mode,
+//!     freq,
+//!     clocks,
+//!     &mut rcc.apb1
+//! );
 //!
-//!     // Full 32-bit read, result contains both thermocouple and internal temperatures
-//!     match spi.read_all(&mut cs_pin, Unit::Celsius) {
-//!         Ok(v) => info!("Ok: {:?}", v),
-//!         Err(e) => info!("Err: {:?}", e),
-//!     }
+//! // Full 32-bit read, result contains both thermocouple and internal temperatures
+//! match spi.read_all(&mut cs_pin, Unit::Celsius) {
+//!     Ok(v) => info!("Ok: {:?}", v),
+//!     Err(e) => info!("Err: {:?}", e),
+//! }
 //!
-//!     // Just thermocouple 16-bit read
-//!     match spi.read_thermocouple(&mut cs_pin, Unit::Celsius) {
-//!         Ok(v) => info!("Ok: {:?}", v),
-//!         Err(e) => info!("Err: {:?}", e),
-//!     }
+//! // Just thermocouple 16-bit read
+//! match spi.read_thermocouple(&mut cs_pin, Unit::Celsius) {
+//!     Ok(v) => info!("Ok: {:?}", v),
+//!     Err(e) => info!("Err: {:?}", e),
+//! }
 //! ```
 
 #![no_std]
@@ -48,7 +51,7 @@
 
 use bit_field::BitField;
 use core::ops::RangeInclusive;
-use embedded_hal::{digital, spi};
+use embedded_hal::spi;
 
 pub mod blocking;
 
@@ -70,11 +73,9 @@ const FAULT_NO_THERMOCOUPLE_BIT: usize = 0;
 
 /// Possible errors returned by this crate
 #[derive(Debug)]
-pub enum Error<Spi: spi::ErrorType, CS: digital::ErrorType> {
+pub enum Error<Spi: spi::ErrorType> {
     /// An error returned by a call to Transfer::transfer
     SpiError(Spi::Error),
-    /// An error returned by a call to OutputPin::{set_high, set_low}
-    ChipSelectError(CS::Error),
     /// The fault bit (16) was set in the response from the MAX31855
     Fault,
     /// The SCV fault bit (2) was set in the response from the MAX31855
@@ -175,10 +176,9 @@ pub struct FullResult {
 mod io_less {
     use super::*;
 
-    impl<S, C> From<IoLessError> for Error<S, C>
+    impl<S> From<IoLessError> for Error<S>
     where
         S: spi::ErrorType,
-        C: digital::ErrorType,
     {
         fn from(value: IoLessError) -> Self {
             match value {
