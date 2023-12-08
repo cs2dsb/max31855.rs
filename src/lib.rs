@@ -1,5 +1,5 @@
 //! # max31855
-//! 
+//!
 //! Driver for [MAX31855 thermocouple converter](https://www.maximintegrated.com/en/products/sensors/MAX31855.html) using traits from `embedded-hal`.
 //!
 //! ## Features
@@ -17,7 +17,7 @@
 //!         polarity: Polarity::IdleLow,
 //!         phase: Phase::CaptureOnFirstTransition
 //!     };
-//! 
+//!
 //!     let mut spi = Spi::spi2(
 //!         device.SPI2,
 //!         (sck_pin, miso_pin, mosi_pin)
@@ -26,13 +26,13 @@
 //!         clocks,
 //!         &mut rcc.apb1
 //!     );
-//! 
+//!
 //!     // Full 32-bit read, result contains both thermocouple and internal temperatures
 //!     match spi.read_all(&mut cs_pin, Unit::Celsius) {
 //!         Ok(v) => info!("Ok: {:?}", v),
 //!         Err(e) => info!("Err: {:?}", e),
 //!     }
-//! 
+//!
 //!     // Just thermocouple 16-bit read
 //!     match spi.read_thermocouple(&mut cs_pin, Unit::Celsius) {
 //!         Ok(v) => info!("Ok: {:?}", v),
@@ -43,12 +43,12 @@
 #![no_std]
 #![deny(warnings, missing_docs)]
 
-use embedded_hal::{
-    blocking::spi::Transfer,
-    digital::v2::OutputPin,
-};
 use bit_field::BitField;
 use core::ops::RangeInclusive;
+use embedded_hal::{
+    digital::{self, OutputPin, PinState},
+    spi::{self, SpiDevice},
+};
 
 /// The bits that represent the thermocouple value when reading the first u16 from the sensor
 const THERMOCOUPLE_BITS: RangeInclusive<usize> = 2..=15;
@@ -65,11 +65,11 @@ const FAULT_NO_THERMOCOUPLE_BIT: usize = 0;
 
 /// Possible errors returned by this crate
 #[derive(Debug)]
-pub enum Error<SpiE, CsE> {
+pub enum Error<Spi: spi::ErrorType, CS: digital::ErrorType> {
     /// An error returned by a call to Transfer::transfer
-    SpiError(SpiE),
+    SpiError(Spi::Error),
     /// An error returned by a call to OutputPin::{set_high, set_low}
-    ChipSelectError(CsE),
+    ChipSelectError(CS::Error),
     /// The fault bit (16) was set in the response from the MAX31855
     Fault,
     /// The SCV fault bit (2) was set in the response from the MAX31855
@@ -121,34 +121,25 @@ impl Reading {
     }
 }
 
-enum CsState {
-    High,
-    Low,
-}
-use CsState::*;
-
-fn set_cs<CS, SpiE, CsE>(cs: &mut CS, state: CsState) -> Result<(), Error<SpiE, CsE>>
+fn transfer<CS, SPI>(
+    spi: &mut SPI,
+    chip_select: &mut CS,
+    buffer: &mut [u8],
+) -> Result<(), Error<SPI, CS>>
 where
-    CS: OutputPin<Error = CsE>, 
+    CS: OutputPin,
+    SPI: SpiDevice<u8> + spi::ErrorType,
 {
-    let result = match state {
-        CsState::High => cs.set_high(),
-        CsState::Low => cs.set_low(),
-    };
+    chip_select
+        .set_state(PinState::Low)
+        .map_err(|e| Error::ChipSelectError(e))?;
 
-    result.map_err(|e| Error::ChipSelectError(e))
-}
+    spi.transfer_in_place(buffer)
+        .map_err(|e| Error::SpiError(e))?;
 
-fn transfer<CS, SPI, SpiE, CsE>(spi: &mut SPI, chip_select: &mut CS, buffer: &mut [u8]) -> Result<(), Error<SpiE, CsE>>
-where
-    CS: OutputPin<Error = CsE>, 
-    SPI: Transfer<u8, Error = SpiE>,
-{
-    set_cs(chip_select, Low)?;
-
-    spi.transfer(buffer).map_err(|e| Error::SpiError(e))?;
-
-    set_cs(chip_select, High)
+    chip_select
+        .set_state(PinState::High)
+        .map_err(|e| Error::ChipSelectError(e))
 }
 
 fn bits_to_i16(bits: u16, len: usize, divisor: i16, shift: usize) -> i16 {
@@ -171,8 +162,8 @@ pub struct FullResultRaw {
 
 impl FullResultRaw {
     /// Convert the raw ADC counts into degrees in the provided Unit
-    pub fn convert(self, unit: Unit) -> FullResult {        
-        let thermocouple = unit.convert(Reading::Thermocouple.convert(self.thermocouple));        
+    pub fn convert(self, unit: Unit) -> FullResult {
+        let thermocouple = unit.convert(Reading::Thermocouple.convert(self.thermocouple));
         let internal = unit.convert(Reading::Internal.convert(self.internal));
 
         FullResult {
@@ -195,24 +186,28 @@ pub struct FullResult {
 }
 
 /// Trait enabling using the MAX31855
-pub trait Max31855<SpiE, CsE, CS> {
+pub trait Max31855<Spi: SpiDevice, CS: OutputPin> {
     /// Reads the thermocouple temperature and leave it as a raw ADC count. Checks if there is a fault but doesn't detect what kind of fault it is
-    fn read_thermocouple_raw(&mut self, chip_select: &mut CS) -> Result<i16, Error<SpiE, CsE>>;
+    fn read_thermocouple_raw(&mut self, chip_select: &mut CS) -> Result<i16, Error<Spi, CS>>;
     /// Reads the thermocouple temperature and converts it into degrees in the provided unit. Checks if there is a fault but doesn't detect what kind of fault it is
-    fn read_thermocouple(&mut self, chip_select: &mut CS, unit: Unit) -> Result<f32, Error<SpiE, CsE>>;
+    fn read_thermocouple(
+        &mut self,
+        chip_select: &mut CS,
+        unit: Unit,
+    ) -> Result<f32, Error<Spi, CS>>;
     /// Reads both the thermocouple and the internal temperatures, leaving them as raw ADC counts and resolves faults to one of vcc short, ground short or missing thermocouple
-    fn read_all_raw(&mut self, chip_select: &mut CS) -> Result<FullResultRaw, Error<SpiE, CsE>>;
+    fn read_all_raw(&mut self, chip_select: &mut CS) -> Result<FullResultRaw, Error<Spi, CS>>;
     /// Reads both the thermocouple and the internal temperatures, converts them into degrees in the provided unit and resolves faults to one of vcc short, ground short or missing thermocouple
-    fn read_all(&mut self, chip_select: &mut CS, unit: Unit) -> Result<FullResult, Error<SpiE, CsE>>;
+    fn read_all(&mut self, chip_select: &mut CS, unit: Unit) -> Result<FullResult, Error<Spi, CS>>;
 }
 
-impl<CS, SPI, SpiE, CsE> Max31855<SpiE, CsE, CS> for SPI
+impl<CS, SPI> Max31855<SPI, CS> for SPI
 where
-    CS: OutputPin<Error = CsE>, 
-    SPI: Transfer<u8, Error = SpiE>,
+    CS: OutputPin,
+    SPI: SpiDevice<u8>,
 {
     /// Reads the thermocouple temperature and leave it as a raw ADC count. Checks if there is a fault but doesn't detect what kind of fault it is
-    fn read_thermocouple_raw(&mut self, chip_select: &mut CS) -> Result<i16, Error<SpiE, CsE>> {
+    fn read_thermocouple_raw(&mut self, chip_select: &mut CS) -> Result<i16, Error<SPI, CS>> {
         let mut buffer = [0; 2];
         transfer(self, chip_select, &mut buffer)?;
 
@@ -220,31 +215,32 @@ where
             Err(Error::Fault)?
         }
 
-        let raw = (buffer[0] as u16) << 8 |
-                  (buffer[1] as u16) << 0;
+        let raw = (buffer[0] as u16) << 8 | (buffer[1] as u16);
 
         let thermocouple = bits_to_i16(raw.get_bits(THERMOCOUPLE_BITS), 14, 4, 2);
-        
+
         Ok(thermocouple)
     }
 
     /// Reads the thermocouple temperature and converts it into degrees in the provided unit. Checks if there is a fault but doesn't detect what kind of fault it is
-    fn read_thermocouple(&mut self, chip_select: &mut CS, unit: Unit) -> Result<f32, Error<SpiE, CsE>> {
-        self
-            .read_thermocouple_raw(chip_select)
+    fn read_thermocouple(
+        &mut self,
+        chip_select: &mut CS,
+        unit: Unit,
+    ) -> Result<f32, Error<SPI, CS>> {
+        self.read_thermocouple_raw(chip_select)
             .map(|r| unit.convert(Reading::Thermocouple.convert(r)))
     }
 
     /// Reads both the thermocouple and the internal temperatures, leaving them as raw ADC counts and resolves faults to one of vcc short, ground short or missing thermocouple
-    fn read_all_raw(&mut self, chip_select: &mut CS) -> Result<FullResultRaw, Error<SpiE, CsE>> {
+    fn read_all_raw(&mut self, chip_select: &mut CS) -> Result<FullResultRaw, Error<SPI, CS>> {
         let mut buffer = [0; 4];
         transfer(self, chip_select, &mut buffer)?;
 
         let fault = buffer[1].get_bit(0);
 
         if fault {
-            let raw = (buffer[2] as u16) << 8 |
-                      (buffer[3] as u16) << 0;
+            let raw = (buffer[2] as u16) << 8 | (buffer[3] as u16);
 
             if raw.get_bit(FAULT_NO_THERMOCOUPLE_BIT) {
                 Err(Error::MissingThermocoupleFault)?
@@ -259,11 +255,9 @@ where
             }
         }
 
-        let first_u16 = (buffer[0] as u16) << 8 |
-                        (buffer[1] as u16) << 0;
-        let second_u16 = (buffer[2] as u16) << 8 |
-                         (buffer[3] as u16) << 0;
-        
+        let first_u16 = (buffer[0] as u16) << 8 | (buffer[1] as u16);
+        let second_u16 = (buffer[2] as u16) << 8 | (buffer[3] as u16);
+
         let thermocouple = bits_to_i16(first_u16.get_bits(THERMOCOUPLE_BITS), 14, 4, 2);
         let internal = bits_to_i16(second_u16.get_bits(INTERNAL_BITS), 12, 16, 4);
 
@@ -274,9 +268,7 @@ where
     }
 
     /// Reads both the thermocouple and the internal temperatures, converts them into degrees in the provided unit and resolves faults to one of vcc short, ground short or missing thermocouple
-    fn read_all(&mut self, chip_select: &mut CS, unit: Unit) -> Result<FullResult, Error<SpiE, CsE>> {
-        self
-            .read_all_raw(chip_select)
-            .map(|r| r.convert(unit))
+    fn read_all(&mut self, chip_select: &mut CS, unit: Unit) -> Result<FullResult, Error<SPI, CS>> {
+        self.read_all_raw(chip_select).map(|r| r.convert(unit))
     }
 }
