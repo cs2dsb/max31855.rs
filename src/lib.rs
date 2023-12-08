@@ -231,15 +231,15 @@ mod io_less {
             let raw = (buffer[2] as u16) << 8 | (buffer[3] as u16);
 
             if raw.get_bit(FAULT_NO_THERMOCOUPLE_BIT) {
-                Err(IoLessError::MissingThermocoupleFault)?
+                return Err(IoLessError::MissingThermocoupleFault);
             } else if raw.get_bit(FAULT_GROUND_SHORT_BIT) {
-                Err(IoLessError::GroundShortFault)?
+                return Err(IoLessError::GroundShortFault);
             } else if raw.get_bit(FAULT_VCC_SHORT_BIT) {
-                Err(IoLessError::VccShortFault)?
+                return Err(IoLessError::VccShortFault);
             } else {
                 // This should impossible, one of the other fields should be set as well
                 // but handled here just-in-case
-                Err(IoLessError::Fault)?
+                return Err(IoLessError::Fault);
             }
         }
 
